@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Чувачі</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #fff);
+    --text: var(--tg-theme-text-color, #111);
+    --hint: var(--tg-theme-hint-color, #888);
+    --btn: var(--tg-theme-button-color, #2ea6ff);
+    --btn-text: var(--tg-theme-button-text-color, #fff);
+    --card: var(--tg-theme-secondary-bg-color, #f2f3f5);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
+         color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
+  .screen { display: none; flex: 1; flex-direction: column; align-items: center;
+            justify-content: center; padding: 24px; gap: 14px; text-align: center; }
+  .screen.active { display: flex; }
+  h1 { margin: 0; font-size: 34px; }
+  .sub { color: var(--hint); margin: 0; }
+  .btn { width: 100%; max-width: 320px; padding: 15px; border: 0; border-radius: 14px;
+         font-size: 17px; font-weight: 600; background: var(--btn); color: var(--btn-text); cursor: pointer; }
+  .btn.ghost { background: var(--card); color: var(--text); }
+  .moves { display: flex; gap: 12px; }
+  .move { font-size: 46px; width: 92px; height: 92px; border-radius: 22px; border: 3px solid transparent;
+          background: var(--card); cursor: pointer; transition: transform .1s; }
+  .move:active { transform: scale(.92); }
+  .move.picked { border-color: var(--btn); }
+  .move:disabled:not(.picked) { opacity: .35; }
+  .score { font-size: 44px; font-weight: 800; }
+  .names { display: flex; justify-content: space-between; width: 100%; max-width: 320px; color: var(--hint); }
+  .duel { font-size: 72px; display: flex; gap: 28px; min-height: 90px; align-items: center; }
+  .timer { height: 6px; width: 100%; max-width: 320px; background: var(--card); border-radius: 3px; overflow: hidden; }
+  .timer > div { height: 100%; background: var(--btn); width: 100%; }
+  .spinner { width: 42px; height: 42px; border: 4px solid var(--card); border-top-color: var(--btn);
+             border-radius: 50%; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .code { font-size: 32px; font-weight: 800; letter-spacing: 4px; background: var(--card);
+          padding: 10px 18px; border-radius: 12px; }
+  table { width: 100%; max-width: 340px; border-collapse: collapse; }
+  td { padding: 8px 4px; border-bottom: 1px solid var(--card); text-align: left; }
+  td:last-child { text-align: right; color: var(--hint); }
+  .big { font-size: 64px; }
+</style>
+</head>
+<body>
+
+<section id="menu" class="screen active">
+  <div class="big">🪨✂️📄</div>
+  <h1>Чувачі</h1>
+  <p class="sub" id="hello">Підключення…</p>
+  <button class="btn" id="btnRandom">⚡ Знайти суперника</button>
+  <button class="btn ghost" id="btnFriend">👊 Викликати друга</button>
+  <button class="btn ghost" id="btnTop">🏆 Лідерборд</button>
+</section>
+
+<section id="searching" class="screen">
+  <div class="spinner"></div>
+  <p id="searchText">Шукаємо чувака…</p>
+  <button class="btn ghost" id="btnCancel">Скасувати</button>
+</section>
+
+<section id="room" class="screen">
+  <p class="sub">Код кімнати</p>
+  <div class="code" id="roomCode">——</div>
+  <p class="sub">Чекаємо, поки друг прийме виклик…</p>
+  <button class="btn" id="btnShare">📨 Надіслати другу</button>
+  <button class="btn ghost" id="btnCancelRoom">Скасувати</button>
+</section>
+
+<section id="game" class="screen">
+  <div class="names"><span>Ти</span><span id="oppName">Суперник</span></div>
+  <div class="score" id="score">0 : 0</div>
+  <p class="sub" id="roundLabel">Раунд 1</p>
+  <div class="duel" id="duel"></div>
+  <p id="status">Обирай!</p>
+  <div class="timer"><div id="timerBar"></div></div>
+  <div class="moves">
+    <button class="move" data-move="rock">🪨</button>
+    <button class="move" data-move="scissors">✂️</button>
+    <button class="move" data-move="paper">📄</button>
+  </div>
+</section>
+
+<section id="result" class="screen">
+  <div class="big" id="resultEmoji">🏆</div>
+  <h1 id="resultTitle">Перемога!</h1>
+  <p class="sub" id="resultSub"></p>
+  <button class="btn" id="btnAgain">Ще раз</button>
+  <button class="btn ghost" id="btnMenu">У меню</button>
+</section>
+
+<section id="top" class="screen">
+  <h1>🏆 Топ чуваків</h1>
+  <table id="topTable"></table>
+  <button class="btn ghost" id="btnTopBack">Назад</button>
+</section>
+
+<script>
+  const tg = window.Telegram?.WebApp;
+  tg?.ready();
+  tg?.expand();
+
+  const qs = new URLSearchParams(location.search);
+  const EMOJI = { rock: '🪨', scissors: '✂️', paper: '📄' };
+  const $ = (id) => document.getElementById(id);
+  const haptic = (t) => { try {
+    if (t === 'tap') tg?.HapticFeedback?.impactOccurred('medium');
+    else tg?.HapticFeedback?.notificationOccurred(t);
+  } catch (_) {} };
+
+  function show(id) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.toggle('active', s.id === id));
+  }
+
+  const socket = io({ auth: { initData: tg?.initData || '', devName: qs.get('dev') } });
+
+  let pendingRoom = qs.get('room');
+  let lastMode = 'random';
+  let roomLink = null;
+  let timerInt = null;
+
+  socket.on('connect_error', () => {
+    $('hello').textContent = 'Не вдалося підключитись. Відкрий гру через Telegram-бота.';
+  });
+
+  socket.on('hello', ({ name }) => {
+    $('hello').textContent = `Привіт, ${name}! Гра до 2 перемог.`;
+    if (pendingRoom) {
+      socket.emit('room:join', { code: pendingRoom });
+      pendingRoom = null;
+      $('searchText').textContent = 'Заходимо в кімнату…';
+      show('searching');
+    }
+  });
+
+  // --- меню ---
+  $('btnRandom').onclick = () => { lastMode = 'random'; socket.emit('queue:join');
+    $('searchText').textContent = 'Шукаємо чувака…'; show('searching'); };
+  $('btnFriend').onclick = () => { lastMode = 'friend'; socket.emit('room:create'); };
+  $('btnCancel').onclick = $('btnCancelRoom').onclick = () => { socket.emit('search:cancel'); show('menu'); };
+  $('btnMenu').onclick = () => show('menu');
+  $('btnAgain').onclick = () => (lastMode === 'friend' ? $('btnFriend') : $('btnRandom')).onclick();
+  $('btnTopBack').onclick = () => show('menu');
+
+  $('btnTop').onclick = async () => {
+    const table = $('topTable');
+    table.replaceChildren();
+    try {
+      const rows = await (await fetch('/api/leaderboard')).json();
+      if (!rows.length) table.insertRow().insertCell().textContent = 'Поки порожньо — зіграй першим!';
+      rows.forEach((r, i) => {
+        const tr = table.insertRow();
+        tr.insertCell().textContent = `${i + 1}. ${r.name}`;
+        tr.insertCell().textContent = `${r.wins} W / ${r.losses} L`;
+      });
+    } catch (_) { table.insertRow().insertCell().textContent = 'Помилка завантаження'; }
+    show('top');
+  };
+
+  // --- кімната з другом ---
+  socket.on('room:created', ({ code, link }) => {
+    roomLink = link;
+    $('roomCode').textContent = code;
+    show('room');
+  });
+  $('btnShare').onclick = () => {
+    const text = 'Го в Чуваків! Камінь, ножиці, папір — до 2 перемог 🪨✂️📄';
+    if (roomLink && tg) {
+      tg.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent(roomLink)}&text=${encodeURIComponent(text)}`);
+    } else {
+      // DEV: посилання на цю ж сторінку з кодом кімнати
+      const url = `${location.origin}${location.pathname}?dev=Друг&room=${$('roomCode').textContent}`;
+      navigator.clipboard?.writeText(url);
+      $('btnShare').textContent = '✅ Посилання скопійовано';
+    }
+  };
+  socket.on('room:error', ({ message }) => { show('menu'); $('hello').textContent = message; });
+
+  // --- гра ---
+  const moveBtns = document.querySelectorAll('.move');
+  moveBtns.forEach(b => b.onclick = () => {
+    haptic('tap');
+    socket.emit('move', { move: b.dataset.move });
+    moveBtns.forEach(x => { x.disabled = true; x.classList.toggle('picked', x === b); });
+    $('status').textContent = 'Чекаємо на суперника…';
+  });
+
+  function startTimer(ms) {
+    clearInterval(timerInt);
+    const end = Date.now() + ms;
+    timerInt = setInterval(() => {
+      const left = Math.max(0, end - Date.now());
+      $('timerBar').style.width = (left / ms * 100) + '%';
+      if (!left) clearInterval(timerInt);
+    }, 100);
+  }
+
+  socket.on('match:start', ({ opponent }) => {
+    $('oppName').textContent = opponent;
+    $('score').textContent = '0 : 0';
+    $('duel').textContent = '';
+    $('status').textContent = `Суперник: ${opponent}`;
+    $('roundLabel').textContent = 'Готуйся…';
+    moveBtns.forEach(x => { x.disabled = true; x.classList.remove('picked'); });
+    haptic('success');
+    show('game');
+  });
+
+  socket.on('round:start', ({ round, timeMs }) => {
+    $('roundLabel').textContent = `Раунд ${round}`;
+    $('duel').textContent = '';
+    $('status').textContent = 'Обирай!';
+    moveBtns.forEach(x => { x.disabled = false; x.classList.remove('picked'); });
+    startTimer(timeMs);
+  });
+
+  socket.on('opponent:ready', () => {
+    if (!document.querySelector('.move.picked')) $('status').textContent = 'Суперник уже обрав! Твій хід…';
+  });
+
+  socket.on('round:result', ({ you, opponent, result, score, auto }) => {
+    clearInterval(timerInt);
+    moveBtns.forEach(x => x.disabled = true);
+    $('duel').textContent = `${EMOJI[you]}  ${EMOJI[opponent]}`;
+    $('score').textContent = `${score[0]} : ${score[1]}`;
+    const msg = { win: '✅ Раунд твій!', lose: '❌ Раунд програно', draw: '🤝 Нічия' }[result];
+    $('status').textContent = auto ? `${msg} (час вийшов — хід випадковий)` : msg;
+    haptic(result === 'win' ? 'success' : result === 'lose' ? 'error' : 'warning');
+  });
+
+  socket.on('match:end', ({ result, reason, score }) => {
+    clearInterval(timerInt);
+    const win = result === 'win';
+    $('resultEmoji').textContent = win ? '🏆' : '💀';
+    $('resultTitle').textContent = win ? 'Перемога!' : 'Поразка';
+    $('resultSub').textContent = reason === 'opponent_left'
+      ? 'Суперник утік з поля бою 🏃'
+      : `Рахунок ${score[0]} : ${score[1]}`;
+    haptic(win ? 'success' : 'error');
+    show('result');
+  });
+</script>
+</body>
+</html>
